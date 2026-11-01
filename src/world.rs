@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::entity::{Entity, Item, Npc};
 use crate::protocol::Command;
@@ -34,7 +34,7 @@ pub struct Room {
 pub struct Player {
     pub name: String,
     pub room_id: RoomId,
-    pub outgoing: Sender<String>,
+    pub outgoing: UnboundedSender<String>,
 }
 
 pub struct RoomView<'a> {
@@ -85,7 +85,7 @@ impl Default for World {
 }
 
 impl World {
-    pub fn join(&mut self, name: String, outgoing: Sender<String>) -> PlayerId {
+    pub fn join(&mut self, name: String, outgoing: UnboundedSender<String>) -> PlayerId {
         let id = PlayerId(self.next_player_id);
         self.next_player_id += 1;
         self.players.insert(
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn joined_players_share_one_sorted_list() {
         let mut world = World::default();
-        let (sender, _receiver) = std::sync::mpsc::channel();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         world.join("Ryan".into(), sender.clone());
         world.join("Bryce".into(), sender);
 
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn a_valid_exit_moves_the_player() {
         let mut world = World::default();
-        let (sender, _receiver) = std::sync::mpsc::channel();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let player = world.join("Bryce".into(), sender);
 
         assert_eq!(world.move_player(player, Direction::North), Ok(RoomId(1)));

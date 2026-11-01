@@ -1,12 +1,14 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::protocol::Command;
 use crate::world::{PlayerId, World};
 
 pub enum WorldMessage {
     Join {
         name: String,
-        outgoing: Sender<String>,
+        outgoing: UnboundedSender<String>,
         reply: Sender<PlayerId>,
     },
     Command {

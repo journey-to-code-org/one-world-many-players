@@ -37,6 +37,11 @@ pub struct Player {
     pub outgoing: Sender<String>,
 }
 
+pub struct RoomView<'a> {
+    pub room: &'a Room,
+    pub players: Vec<&'a Player>,
+}
+
 pub struct World {
     next_player_id: u64,
     players: HashMap<PlayerId, Player>,
@@ -143,6 +148,17 @@ impl World {
         Ok(destination)
     }
 
+    pub fn room_view(&self, room_id: RoomId) -> Option<RoomView<'_>> {
+        let room = self.rooms.get(&room_id)?;
+        let players = self
+            .players
+            .values()
+            .filter(|player| player.room_id == room_id)
+            .collect();
+
+        Some(RoomView { room, players })
+    }
+
     pub fn handle(&mut self, player_id: PlayerId, command: Command) {
         let Some(player) = self.players.get(&player_id) else {
             return;
@@ -162,12 +178,8 @@ impl World {
             },
             Command::Look => {
                 let room_id = self.players[&player_id].room_id;
-                let room = &self.rooms[&room_id];
-                let mut description = format!("{}\n{}", room.name, room.description);
-                for entity in &room.contents {
-                    description.push_str(&format!("\n- {}", entity.describe()));
-                }
-                let _ = outgoing.send(description);
+                let view = self.room_view(room_id).expect("player room exists");
+                let _ = outgoing.send(render_room(view));
             }
             Command::Say(message) => self.broadcast(&format!("{name} says: {message}")),
             Command::Who => {
@@ -178,6 +190,22 @@ impl World {
             }
         }
     }
+}
+
+pub fn render_room(view: RoomView<'_>) -> String {
+    use std::fmt::Write;
+
+    let mut message = format!("{}\n{}", view.room.name, view.room.description);
+    for entity in &view.room.contents {
+        let _ = write!(message, "\n- {}", entity.describe());
+    }
+    if !view.players.is_empty() {
+        message.push_str("\nPlayers:");
+        for player in view.players {
+            let _ = write!(message, "\n- {}", player.name);
+        }
+    }
+    message
 }
 
 #[cfg(test)]

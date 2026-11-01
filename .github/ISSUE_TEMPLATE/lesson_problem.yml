@@ -1,0 +1,29 @@
+name: Lesson or checkpoint problem
+description: Report a reproducible mismatch or confusing setup step.
+title: "[Lesson]: "
+labels: [needs-triage]
+body:
+  - type: input
+    id: lesson
+    attributes:
+      label: Lesson and checkpoint
+      placeholder: Article 8, article_8
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What did you run?
+      description: Include the command and the smallest relevant code or terminal output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Rust version and operating system

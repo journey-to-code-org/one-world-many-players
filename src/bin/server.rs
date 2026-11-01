@@ -37,7 +37,7 @@ fn handle_connection(stream: TcpStream, world_tx: Sender<WorldMessage>) -> io::R
         .map_err(io::Error::other)?;
     let player_id = reply_rx.recv().map_err(io::Error::other)?;
     outgoing
-        .send("Welcome. Commands: look, who, say, quit".into())
+        .send("Welcome. Commands: look, go, who, say, quit".into())
         .ok();
 
     loop {

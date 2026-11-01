@@ -1,5 +1,8 @@
+use crate::world::Direction;
+
 #[derive(Debug, PartialEq)]
 pub enum Command {
+    Go(Direction),
     Look,
     Say(String),
     Who,
@@ -10,6 +13,7 @@ pub enum Command {
 pub enum ParseError {
     Empty,
     MissingMessage,
+    MissingDirection,
     Unknown(String),
 }
 
@@ -24,6 +28,19 @@ pub fn parse_command(input: &str) -> Result<Command, ParseError> {
     let rest = words.next().map(str::trim).filter(|text| !text.is_empty());
 
     match verb {
+        "go" => {
+            let Some(direction) = rest else {
+                return Err(ParseError::MissingDirection);
+            };
+            let direction = match direction {
+                "north" => Direction::North,
+                "south" => Direction::South,
+                "east" => Direction::East,
+                "west" => Direction::West,
+                other => return Err(ParseError::Unknown(other.to_owned())),
+            };
+            Ok(Command::Go(direction))
+        }
         "look" => Ok(Command::Look),
         "who" => Ok(Command::Who),
         "quit" => Ok(Command::Quit),

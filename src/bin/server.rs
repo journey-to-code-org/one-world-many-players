@@ -4,10 +4,22 @@ use std::sync::mpsc::{self, Sender};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, watch};
+use tokio::task::JoinSet;
 
 use one_world_many_players::protocol::{Command, parse_command};
 use one_world_many_players::world::{PlayerId, World, WorldEvent};
 use one_world_many_players::world_server::{self, WorldMessage};
+
+async fn load_world() -> io::Result<World> {
+    match tokio::fs::read("world.json").await {
+        Ok(bytes) => {
+            let saved = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+            World::from_snapshot(saved)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(World::default()),
+        Err(error) => Err(error),
+    }
+}
 
 fn send_command(
     world_tx: &Sender<WorldMessage>,
@@ -87,7 +99,7 @@ async fn handle_connection(
     }
 
     world_tx
-        .send(WorldMessage::Leave { player_id })
+        .send(WorldMessage::Disconnect { player_id })
         .map_err(io::Error::other)?;
     Ok(())
 }
@@ -95,12 +107,15 @@ async fn handle_connection(
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:4000").await?;
+    let world = load_world().await?;
     let (world_tx, world_rx) = world_server::channel();
     let (world_events, _) = broadcast::channel(32);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let events_for_owner = world_events.clone();
 
-    std::thread::spawn(move || world_server::run(World::default(), world_rx, events_for_owner));
+    let world_thread =
+        std::thread::spawn(move || world_server::run(world, world_rx, events_for_owner));
+    let mut connections = JoinSet::new();
     println!("Server listening on 127.0.0.1:4000");
 
     loop {
@@ -110,10 +125,11 @@ async fn main() -> io::Result<()> {
                 let world_tx = world_tx.clone();
                 let world_events = world_events.subscribe();
                 let shutdown = shutdown_rx.clone();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     if let Err(error) = handle_connection(stream, world_tx, world_events, shutdown).await {
                         eprintln!("Connection {address} failed: {error}");
                     }
+                    Ok::<(), io::Error>(())
                 });
             }
             result = tokio::signal::ctrl_c() => {
@@ -123,6 +139,24 @@ async fn main() -> io::Result<()> {
             }
         }
     }
+
+    while let Some(result) = connections.join_next().await {
+        result.map_err(io::Error::other)??;
+    }
+
+    let (reply, saved) = tokio::sync::oneshot::channel();
+    world_tx
+        .send(WorldMessage::Snapshot { reply })
+        .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "world owner stopped"))?;
+    let snapshot = saved.await.map_err(io::Error::other)?;
+    let json = serde_json::to_vec_pretty(&snapshot).map_err(io::Error::other)?;
+    tokio::fs::write("world.json", json).await?;
+
+    drop(world_tx);
+    drop(world_events);
+    world_thread
+        .join()
+        .map_err(|_| io::Error::other("world owner thread panicked"))?;
 
     Ok(())
 }

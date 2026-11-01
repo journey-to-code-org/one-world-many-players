@@ -1,12 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io;
+
+use serde::{Deserialize, Serialize};
 
 use crate::entity::{Entity, Item, Npc};
 use crate::protocol::Command;
+use crate::save::{SavedPlayer, SavedWorld};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct PlayerId(pub(crate) u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct RoomId(pub(crate) u64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -69,6 +73,7 @@ impl WorldEvent {
 pub struct World {
     next_player_id: u64,
     players: HashMap<PlayerId, Player>,
+    online: HashSet<PlayerId>,
     rooms: HashMap<RoomId, Room>,
 }
 
@@ -99,6 +104,7 @@ impl Default for World {
         Self {
             next_player_id: 0,
             players: HashMap::new(),
+            online: HashSet::new(),
             rooms: HashMap::from([(gate, gate_room), (road, road_room)]),
         }
     }
@@ -106,6 +112,10 @@ impl Default for World {
 
 impl World {
     pub fn join(&mut self, name: String) -> PlayerId {
+        if let Some((&id, _)) = self.players.iter().find(|(_, player)| player.name == name) {
+            self.online.insert(id);
+            return id;
+        }
         let id = PlayerId(self.next_player_id);
         self.next_player_id += 1;
         self.players.insert(
@@ -115,11 +125,12 @@ impl World {
                 room_id: RoomId(0),
             },
         );
+        self.online.insert(id);
         id
     }
 
-    pub fn leave(&mut self, id: PlayerId) {
-        self.players.remove(&id);
+    pub fn disconnect(&mut self, id: PlayerId) {
+        self.online.remove(&id);
     }
 
     pub fn player_name(&self, id: PlayerId) -> Option<&str> {
@@ -128,8 +139,9 @@ impl World {
 
     pub fn player_names(&self) -> Vec<&str> {
         let mut names: Vec<_> = self
-            .players
-            .values()
+            .online
+            .iter()
+            .filter_map(|id| self.players.get(id))
             .map(|player| player.name.as_str())
             .collect();
         names.sort_unstable();
@@ -163,8 +175,9 @@ impl World {
         let room = self.rooms.get(&room_id)?;
         let players = self
             .players
-            .values()
-            .filter(|player| player.room_id == room_id)
+            .iter()
+            .filter(|(id, player)| self.online.contains(id) && player.room_id == room_id)
+            .map(|(_, player)| player)
             .collect();
         Some(RoomView { room, players })
     }
@@ -201,6 +214,50 @@ impl World {
         };
         vec![event]
     }
+
+    pub fn snapshot(&self) -> SavedWorld {
+        let mut players: Vec<_> = self
+            .players
+            .iter()
+            .map(|(id, player)| SavedPlayer {
+                id: *id,
+                name: player.name.clone(),
+                room_id: player.room_id,
+            })
+            .collect();
+        players.sort_by_key(|player| player.id);
+        SavedWorld {
+            version: 1,
+            players,
+        }
+    }
+
+    pub fn from_snapshot(saved: SavedWorld) -> io::Result<Self> {
+        if saved.version != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported world version {}", saved.version),
+            ));
+        }
+        let mut world = Self::default();
+        for player in saved.players {
+            world.next_player_id = world.next_player_id.max(player.id.0.saturating_add(1));
+            if !world.rooms.contains_key(&player.room_id) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "saved player references an unknown room",
+                ));
+            }
+            world.players.insert(
+                player.id,
+                Player {
+                    name: player.name,
+                    room_id: player.room_id,
+                },
+            );
+        }
+        Ok(world)
+    }
 }
 
 pub fn render_room(view: RoomView<'_>) -> String {
@@ -236,5 +293,17 @@ mod tests {
         let mut world = World::default();
         let player = world.join("Bryce".into());
         assert_eq!(world.move_player(player, Direction::North), Ok(RoomId(1)));
+    }
+
+    #[test]
+    fn a_snapshot_restores_player_positions_without_presence() {
+        let mut world = World::default();
+        let player = world.join("Bryce".into());
+        world.move_player(player, Direction::North).unwrap();
+
+        let restored = World::from_snapshot(world.snapshot()).unwrap();
+
+        assert!(restored.player_names().is_empty());
+        assert_eq!(restored.players[&player].room_id, RoomId(1));
     }
 }

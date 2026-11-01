@@ -1,8 +1,10 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use tokio::sync::broadcast;
+use tokio::sync::oneshot;
 
 use crate::protocol::Command;
+use crate::save::SavedWorld;
 use crate::world::{PlayerId, World, WorldEvent};
 
 pub enum WorldMessage {
@@ -14,8 +16,11 @@ pub enum WorldMessage {
         player_id: PlayerId,
         command: Command,
     },
-    Leave {
+    Disconnect {
         player_id: PlayerId,
+    },
+    Snapshot {
+        reply: oneshot::Sender<SavedWorld>,
     },
 }
 
@@ -42,13 +47,16 @@ pub fn run(
                     let _ = world_events.send(event);
                 }
             }
-            WorldMessage::Leave { player_id } => {
+            WorldMessage::Disconnect { player_id } => {
                 let name = world.player_name(player_id).map(str::to_owned);
-                world.leave(player_id);
+                world.disconnect(player_id);
                 if let Some(name) = name {
                     let _ =
                         world_events.send(WorldEvent::for_all(format!("{name} left the world.")));
                 }
+            }
+            WorldMessage::Snapshot { reply } => {
+                let _ = reply.send(world.snapshot());
             }
         }
     }

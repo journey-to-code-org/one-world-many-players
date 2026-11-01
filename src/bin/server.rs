@@ -1,6 +1,8 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
+use one_world_many_players::protocol::{Command, parse_command};
+
 fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     writeln!(stream, "Welcome. Commands: look, quit")?;
@@ -13,17 +15,16 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
             break;
         }
 
-        let command = line.trim();
-        if command.is_empty() {
-            continue;
+        match parse_command(&line) {
+            Ok(Command::Look) => writeln!(stream, "You see an empty room.")?,
+            Ok(Command::Say(message)) => writeln!(stream, "You say: {message}")?,
+            Ok(Command::Who) => writeln!(stream, "You are the only player.")?,
+            Ok(Command::Quit) => {
+                writeln!(stream, "Goodbye")?;
+                break;
+            }
+            Err(error) => writeln!(stream, "Invalid command: {error:?}")?,
         }
-
-        if command == "quit" {
-            writeln!(stream, "Goodbye")?;
-            break;
-        }
-
-        writeln!(stream, "You entered: {command}")?;
     }
 
     Ok(())

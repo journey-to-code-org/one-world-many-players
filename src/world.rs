@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
+use crate::entity::{Entity, Item, Npc};
 use crate::protocol::Command;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -27,6 +28,7 @@ pub struct Room {
     pub name: String,
     pub description: String,
     pub exits: HashMap<Direction, RoomId>,
+    pub contents: Vec<Box<dyn Entity + Send>>,
 }
 
 pub struct Player {
@@ -46,20 +48,27 @@ impl Default for World {
         let gate = RoomId(0);
         let road = RoomId(1);
         let mut rooms = HashMap::new();
-        rooms.insert(
-            gate,
-            Room {
-                name: "South Gate".into(),
-                description: "A weathered gate opens onto the northern road.".into(),
-                exits: HashMap::from([(Direction::North, road)]),
-            },
-        );
+        let mut gate_room = Room {
+            name: "South Gate".into(),
+            description: "A weathered gate opens onto the northern road.".into(),
+            exits: HashMap::from([(Direction::North, road)]),
+            contents: Vec::new(),
+        };
+        gate_room
+            .contents
+            .push(Box::new(Item::new("Lantern", "A steady blue flame")));
+        gate_room.contents.push(Box::new(Npc::new(
+            "Mara",
+            "The gatekeeper watches the northern road",
+        )));
+        rooms.insert(gate, gate_room);
         rooms.insert(
             road,
             Room {
                 name: "Northern Road".into(),
                 description: "The road runs back toward the gate.".into(),
                 exits: HashMap::from([(Direction::South, gate)]),
+                contents: Vec::new(),
             },
         );
         Self {
@@ -154,7 +163,11 @@ impl World {
             Command::Look => {
                 let room_id = self.players[&player_id].room_id;
                 let room = &self.rooms[&room_id];
-                let _ = outgoing.send(format!("{}\n{}", room.name, room.description));
+                let mut description = format!("{}\n{}", room.name, room.description);
+                for entity in &room.contents {
+                    description.push_str(&format!("\n- {}", entity.describe()));
+                }
+                let _ = outgoing.send(description);
             }
             Command::Say(message) => self.broadcast(&format!("{name} says: {message}")),
             Command::Who => {

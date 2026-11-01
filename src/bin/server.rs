@@ -1,14 +1,13 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use one_world_many_players::protocol::{Command, parse_command};
 use one_world_many_players::world::World;
+use one_world_many_players::world_server::{self, WorldMessage};
 
-type SharedWorld = Arc<Mutex<World>>;
-
-fn handle_connection(stream: TcpStream, world: SharedWorld) -> io::Result<()> {
+fn handle_connection(stream: TcpStream, world_tx: Sender<WorldMessage>) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let (outgoing, incoming) = mpsc::channel::<String>();
     let mut writer = stream.try_clone()?;
@@ -27,13 +26,16 @@ fn handle_connection(stream: TcpStream, world: SharedWorld) -> io::Result<()> {
         return Ok(());
     }
     let name = name.trim().to_owned();
+    let (reply_tx, reply_rx) = mpsc::channel();
 
-    let player_id = {
-        let mut world = world.lock().expect("world mutex poisoned");
-        let id = world.join(name.clone(), outgoing.clone());
-        world.broadcast(&format!("{name} joined the world."));
-        id
-    };
+    world_tx
+        .send(WorldMessage::Join {
+            name,
+            outgoing: outgoing.clone(),
+            reply: reply_tx,
+        })
+        .map_err(io::Error::other)?;
+    let player_id = reply_rx.recv().map_err(io::Error::other)?;
     outgoing
         .send("Welcome. Commands: look, who, say, quit".into())
         .ok();
@@ -45,47 +47,41 @@ fn handle_connection(stream: TcpStream, world: SharedWorld) -> io::Result<()> {
         }
 
         match parse_command(&line) {
-            Ok(Command::Look) => outgoing.send("You see an empty room.".into()).ok(),
-            Ok(Command::Say(message)) => {
-                world
-                    .lock()
-                    .expect("world mutex poisoned")
-                    .broadcast(&format!("{name} says: {message}"));
-                Some(())
+            Ok(command) => {
+                let is_quit = command == Command::Quit;
+                world_tx
+                    .send(WorldMessage::Command { player_id, command })
+                    .map_err(io::Error::other)?;
+                if is_quit {
+                    break;
+                }
             }
-            Ok(Command::Who) => {
-                let names = {
-                    let world = world.lock().expect("world mutex poisoned");
-                    world.player_names().join(", ")
-                };
-                outgoing.send(format!("Online: {names}")).ok()
+            Err(error) => {
+                outgoing.send(format!("Invalid command: {error:?}")).ok();
             }
-            Ok(Command::Quit) => {
-                outgoing.send("Goodbye".into()).ok();
-                break;
-            }
-            Err(error) => outgoing.send(format!("Invalid command: {error:?}")).ok(),
-        };
+        }
     }
 
-    let mut world = world.lock().expect("world mutex poisoned");
-    world.broadcast(&format!("{name} left the world."));
-    world.leave(player_id);
+    world_tx
+        .send(WorldMessage::Leave { player_id })
+        .map_err(io::Error::other)?;
     Ok(())
 }
 
 fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:4000")?;
-    let world = Arc::new(Mutex::new(World::default()));
+    let (world_tx, world_rx) = world_server::channel();
+
+    thread::spawn(move || world_server::run(World::default(), world_rx));
     println!("Server listening on 127.0.0.1:4000");
 
     for connection in listener.incoming() {
         let stream = connection?;
         let address = stream.peer_addr()?;
-        let world = Arc::clone(&world);
+        let world_tx = world_tx.clone();
 
         thread::spawn(move || {
-            if let Err(error) = handle_connection(stream, world) {
+            if let Err(error) = handle_connection(stream, world_tx) {
                 eprintln!("Connection {address} failed: {error}");
             }
         });

@@ -1,5 +1,6 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::thread;
 
 use one_world_many_players::protocol::{Command, parse_command};
 
@@ -34,7 +35,21 @@ fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:4000")?;
     println!("Server listening on 127.0.0.1:4000");
 
-    let (stream, address) = listener.accept()?;
-    println!("Connected: {address}");
-    handle_connection(stream)
+    for connection in listener.incoming() {
+        match connection {
+            Ok(stream) => {
+                let address = stream.peer_addr()?;
+                println!("Connected: {address}");
+
+                thread::spawn(move || {
+                    if let Err(error) = handle_connection(stream) {
+                        eprintln!("Connection {address} failed: {error}");
+                    }
+                });
+            }
+            Err(error) => eprintln!("Accept failed: {error}"),
+        }
+    }
+
+    Ok(())
 }

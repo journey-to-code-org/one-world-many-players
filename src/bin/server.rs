@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use one_world_many_players::protocol::{Command, parse_command};
@@ -8,18 +8,35 @@ use one_world_many_players::world::World;
 
 type SharedWorld = Arc<Mutex<World>>;
 
-fn handle_connection(mut stream: TcpStream, world: SharedWorld) -> io::Result<()> {
+fn handle_connection(stream: TcpStream, world: SharedWorld) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
-    writeln!(stream, "What is your name?")?;
+    let (outgoing, incoming) = mpsc::channel::<String>();
+    let mut writer = stream.try_clone()?;
 
+    thread::spawn(move || {
+        while let Ok(message) = incoming.recv() {
+            if writeln!(writer, "{message}").is_err() {
+                break;
+            }
+        }
+    });
+
+    outgoing.send("What is your name?".into()).ok();
     let mut name = String::new();
     if reader.read_line(&mut name)? == 0 {
         return Ok(());
     }
     let name = name.trim().to_owned();
-    let player_id = world.lock().expect("world mutex poisoned").join(name);
 
-    writeln!(stream, "Welcome. Commands: look, who, say, quit")?;
+    let player_id = {
+        let mut world = world.lock().expect("world mutex poisoned");
+        let id = world.join(name.clone(), outgoing.clone());
+        world.broadcast(&format!("{name} joined the world."));
+        id
+    };
+    outgoing
+        .send("Welcome. Commands: look, who, say, quit".into())
+        .ok();
 
     loop {
         let mut line = String::new();
@@ -28,24 +45,32 @@ fn handle_connection(mut stream: TcpStream, world: SharedWorld) -> io::Result<()
         }
 
         match parse_command(&line) {
-            Ok(Command::Look) => writeln!(stream, "You see an empty room.")?,
-            Ok(Command::Say(message)) => writeln!(stream, "You say: {message}")?,
+            Ok(Command::Look) => outgoing.send("You see an empty room.".into()).ok(),
+            Ok(Command::Say(message)) => {
+                world
+                    .lock()
+                    .expect("world mutex poisoned")
+                    .broadcast(&format!("{name} says: {message}"));
+                Some(())
+            }
             Ok(Command::Who) => {
                 let names = {
                     let world = world.lock().expect("world mutex poisoned");
                     world.player_names().join(", ")
                 };
-                writeln!(stream, "Online: {names}")?;
+                outgoing.send(format!("Online: {names}")).ok()
             }
             Ok(Command::Quit) => {
-                writeln!(stream, "Goodbye")?;
+                outgoing.send("Goodbye".into()).ok();
                 break;
             }
-            Err(error) => writeln!(stream, "Invalid command: {error:?}")?,
-        }
+            Err(error) => outgoing.send(format!("Invalid command: {error:?}")).ok(),
+        };
     }
 
-    world.lock().expect("world mutex poisoned").leave(player_id);
+    let mut world = world.lock().expect("world mutex poisoned");
+    world.broadcast(&format!("{name} left the world."));
+    world.leave(player_id);
     Ok(())
 }
 
